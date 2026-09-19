@@ -47,6 +47,9 @@ const I2C_ADDR_PMU: u8 = 0x34;
 const I2C_ADDR_RTC: u8 = 0x51;
 const I2C_ADDR_TOUCH: u8 = 0x38;
 const BRIGHTNESS_40_PERCENT: u8 = 102;
+const BRIGHTNESS_10_PERCENT: u8 = 26;
+const CLOCK_DIM_AFTER_MS: u64 = 5_000;
+const CLOCK_SLEEP_AFTER_MS: u64 = 65_000;
 static PANEL_INIT: &[(u8, &[u8], u16)] = &[
     // Secuencia completa validada para el SH8601 del reloj. 0x29 solo no
     // alcanza: 0x30/0x44/0xc4 configuran la ventana y el modo AMOLED.
@@ -57,14 +60,15 @@ static PANEL_INIT: &[(u8, &[u8], u16)] = &[
     (0x63, &[0xff], 0), (0x51, &[BRIGHTNESS_40_PERCENT], 0),
 ];
 struct Page { title: &'static str, lines: &'static [&'static str] }
-const PAGES: [Page; 8] = [
+const PAGES: [Page; 9] = [
     Page { title: "MRU", lines: &["MOVIMIENTO RECTILINEO UNIFORME", "a(t) = 0", "v(t) = v0 = constante", "x(t) = x0 + v0*t", "", "dx = x(t)-x0 = v0*t", "vm = dx/dt = v0"] },
     Page { title: "MRUV", lines: &["MOVIMIENTO RECTILINEO UNIFORMEMENTE VARIADO", "a(t) = a = constante", "v(t) = v0 + a*t", "x(t) = x0 + v0*t + 0.5*a*t^2", "", "dx = v0*t + 0.5*a*t^2", "v^2 = v0^2 + 2*a*(x-x0)", "am = (vf-v0)/t"] },
     Page { title: "CAIDA LIBRE", lines: &["Eje positivo hacia abajo; a(t) = g", "v(t) = v0 + g*t", "y(t) = y0 + v0*t + 0.5*g*t^2", "", "Si se suelta (v0=0):", "v(t) = g*t", "y(t) = y0 + 0.5*g*t^2", "g = 9.8 m/s^2 (o 10 si lo indica el ejercicio)"] },
     Page { title: "TIRO VERTICAL", lines: &["Eje positivo hacia arriba; a(t) = -g", "v(t) = v0 - g*t", "y(t) = y0 + v0*t - 0.5*g*t^2", "", "v^2 = v0^2 - 2*g*(y-y0)", "Punto mas alto: v(t)=0", "t subida = v0/g", "y max = y0 + v0^2/(2*g)", "Si regresa al nivel inicial: t total=2*v0/g"] },
-    Page { title: "MCU", lines: &["MOVIMIENTO CIRCULAR UNIFORME", "alfa(t) = 0", "w(t) = w0 = constante", "O(t) = O0 + w0*t", "arco(t) = R*O(t)", "v(t) = R*w0", "ac(t) = v(t)^2/R", "", "PERIODO", "T = 1/f", "T = 60/RPM", "T = 2*pi/w", "w = 2*pi*f", "", "CONVERSION DE RPM", "w (rad/s) = RPM*2*pi/60"] },
+    Page { title: "MCU", lines: &["MOVIMIENTO CIRCULAR UNIFORME", "alfa(t) = 0", "w(t) = w0 = constante", "O(t) = O0 + w0*t", "Oa - Ob = 2*pi*N", "arco(t) = R*O(t)", "v(t) = R*w0", "ac(t) = v(t)^2/R", "", "PERIODO", "T = 1/f", "T = 60/RPM", "T = 2*pi/w", "w = 2*pi*f", "", "CONVERSION DE RPM", "w (rad/s) = RPM*2*pi/60", "Oa = angulo final; Ob = angulo inicial", "N = cantidad de vueltas"] },
     Page { title: "MCUV", lines: &["MOVIMIENTO CIRCULAR VARIADO", "alfa(t) = constante", "w(t) = w0 + alfa*t", "O(t) = O0 + w0*t", "+ 0.5*alfa*t^2", "v(t) = R*w(t)", "at(t) = R*alfa", "ac(t) = R*w(t)^2", "", "SIN TIEMPO", "w^2 = w0^2 + 2*alfa*(O-O0)"] },
     Page { title: "MOV. RELATIVO", lines: &["Para A respecto de B:", "xA/B(t) = xA(t) - xB(t)", "vA/B(t) = vA(t) - vB(t)", "aA/B(t) = aA(t) - aB(t)", "", "MRU de cada movil:", "xA(t)=xA0+vA*t", "xB(t)=xB0+vB*t", "Encuentro: xA(t)=xB(t)", "t = (xB0-xA0)/(vA-vB)", "", "MRUV: x(t)=x0+v0*t+0.5*a*t^2 para cada movil"] },
+    Page { title: "PROYECTIL", lines: &["V0x = V0*cos(ang)", "V0y = V0*sin(ang)", "x(t) = x0 + V0x*t", "y(t) = y0 + V0y*t - 0.5*g*t^2", "vx(t) = V0x", "vy(t) = V0y - g*t", "", "Truco: COS -> X, SIN -> Y", "Si el angulo se mide desde la vertical, se invierten."] },
     Page { title: "SIMBOLOS Y SIGNOS", lines: &["x,y posicion; dx desplazamiento; t tiempo", "v velocidad; a aceleracion; g gravedad", "angulo = posicion angular; R = radio", "velocidad angular y aceleracion angular", "", "Elegir sentido positivo y conservar los signos.", "Usar SI: m, s, m/s, m/s^2.", "km/h a m/s: dividir por 3.6; m/s a km/h: multiplicar por 3.6."] },
 ];
 
@@ -112,33 +116,65 @@ fn turn_off(mut hw: Hardware) -> ! {
 }
 
 fn clear(display: &mut MyDisplay) { display.clear(Rgb888::BLACK).ok(); }
-fn draw_clock(display: &mut MyDisplay, time: DateTime, battery_percent: Option<u8>) {
+fn draw_power_saver_clock(display: &mut MyDisplay, time: DateTime) {
     clear(display);
-    let date_style = MonoTextStyle::new(&FONT_10X20, Rgb888::WHITE);
-    let mut clock: String<6> = String::new(); let _ = write!(clock, "{:02}:{:02}", time.hour, time.minute);
-    let mut date: String<16> = String::new(); let _ = write!(date, "{:02}/{:02}/{}", time.day, time.month, time.year);
     let number_font = ui::font::Font {
         glyphs: assets::font_numbers_160::GLYPHS,
         bitmap: assets::font_numbers_160::BITMAP,
         line_height: 171,
         base_line: 40,
     };
-    // La fuente nativa de 160 px se reduce apenas para que HH:MM conserve
-    // margen lateral en los 410 px del panel.
-    const TIME_SCALE: u32 = 78;
-    let width = ui::font::calculate_text_width_scaled(&number_font, &clock, TIME_SCALE) as i32;
-    ui::font::draw_text_on_color_scaled(
-        // La línea base está compensada por las métricas de la fuente para
-        // que el bloque visible HH:MM quede centrado en y=251.
-        display, &number_font, &clock, Point::new((410 - width) / 2, 294),
-        Rgb888::WHITE, Rgb888::BLACK, TIME_SCALE,
-    ).ok();
-    Text::with_alignment(&date, Point::new(205, 390), date_style, embedded_graphics::text::Alignment::Center).draw(display).ok();
+    let mut hour: String<3> = String::new();
+    let _ = write!(hour, "{:02}", time.hour);
+    let mut minute: String<3> = String::new();
+    let _ = write!(minute, "{:02}", time.minute);
+    let hour_width = ui::font::calculate_text_width(&number_font, &hour) as i32;
+    let minute_width = ui::font::calculate_text_width(&number_font, &minute) as i32;
+    ui::font::draw_text_on_color(display, &number_font, &hour, Point::new((410 - hour_width) / 2, 220), Rgb888::WHITE, Rgb888::BLACK).ok();
+    ui::font::draw_text_on_color(display, &number_font, &minute, Point::new((410 - minute_width) / 2, 390), Rgb888::WHITE, Rgb888::BLACK).ok();
+
+    display.flush().ok();
+}
+
+fn draw_blue_watchface(display: &mut MyDisplay, time: DateTime, battery_percent: Option<u8>) {
+    const PIXELS: usize = 410 * 502;
+    let background = assets::BACKGROUND_WF_2;
+    clear(display);
+    // Fondo original de la watchface: RGB565 seguido de su canal alfa.
+    // Se compone sobre negro para conservar el cielo, las estrellas y el auto.
+    for index in 0..PIXELS {
+        let alpha = background[PIXELS * 2 + index];
+        if alpha == 0 { continue; }
+        let value = u16::from_le_bytes([background[index * 2], background[index * 2 + 1]]);
+        let r = (((value >> 11) & 0x1f) as u32 * 255 / 31 * alpha as u32 / 255) as u8;
+        let g = (((value >> 5) & 0x3f) as u32 * 255 / 63 * alpha as u32 / 255) as u8;
+        let b = ((value & 0x1f) as u32 * 255 / 31 * alpha as u32 / 255) as u8;
+        Pixel(Point::new((index % 410) as i32, (index / 410) as i32), Rgb888::new(r, g, b)).draw(display).ok();
+    }
+
+    let number_font = ui::font::Font {
+        glyphs: assets::font_numbers_160::GLYPHS,
+        bitmap: assets::font_numbers_160::BITMAP,
+        line_height: 171,
+        base_line: 40,
+    };
+    let mut hour: String<3> = String::new();
+    let _ = write!(hour, "{:02}", time.hour);
+    let mut minute: String<3> = String::new();
+    let _ = write!(minute, "{:02}", time.minute);
+    let hour_width = ui::font::calculate_text_width(&number_font, &hour) as i32;
+    let minute_width = ui::font::calculate_text_width(&number_font, &minute) as i32;
+    ui::font::draw_text(display, &background[..PIXELS * 2], &number_font, &hour, Point::new((410 - hour_width) / 2, 220), Rgb888::WHITE).ok();
+    ui::font::draw_text(display, &background[..PIXELS * 2], &number_font, &minute, Point::new((410 - minute_width) / 2, 390), Rgb888::WHITE).ok();
+
+    let text = MonoTextStyle::new(&FONT_10X20, Rgb888::WHITE);
+    let mut date: String<16> = String::new();
+    let _ = write!(date, "{:02}/{:02}/{}", time.day, time.month, time.year);
+    Text::with_alignment(&date, Point::new(205, 465), text, embedded_graphics::text::Alignment::Center).draw(display).ok();
     if let Some(percent) = battery_percent {
         let mut battery: String<5> = String::new();
         let _ = write!(battery, "{}%", percent);
-        // Margen extra para la esquina superior derecha redondeada.
-        Text::with_alignment(&battery, Point::new(360, 62), date_style, embedded_graphics::text::Alignment::Right).draw(display).ok();
+        Text::with_alignment(&battery, Point::new(360, 62), text, embedded_graphics::text::Alignment::Right).draw(display).ok();
     }
     display.flush().ok();
 }
@@ -297,16 +333,32 @@ async fn ui_task(mut hw: Hardware) {
     let mut last_touch: Option<(u16, u16)> = None;
     let mut page_changed_this_touch = false;
     let mut summary_hold_deadline: Option<Instant> = None;
+    let mut clock_idle_since = Instant::now();
+    let mut clock_dimmed = false;
     let mut shown_minute = 255;
     // El programador USB usa GPIO0 durante el reset. Darle tiempo para soltar
     // la línea evita interpretar ese pulso técnico como un apagado del reloj.
     Timer::after(Duration::from_secs(2)).await;
+    clock_idle_since = Instant::now();
     loop {
         if !showing_summary {
+            let clock_idle_ms = (Instant::now() - clock_idle_since).as_millis();
+            if clock_idle_ms >= CLOCK_SLEEP_AFTER_MS {
+                turn_off(hw);
+            }
+            if !clock_dimmed && clock_idle_ms >= CLOCK_DIM_AFTER_MS {
+                hw.display.send_command_with_data(0x51, &[BRIGHTNESS_10_PERCENT]).ok();
+                clock_dimmed = true;
+                shown_minute = 255;
+            }
             let time = Pcf85063a::new(&mut hw.i2c, I2C_ADDR_RTC).get().unwrap_or(DateTime { year: 2026, month: 1, day: 1, weekday: 0, hour: 0, minute: 0, second: 0 });
             if time.minute != shown_minute {
-                let battery = Axp2101::new(&mut hw.i2c, I2C_ADDR_PMU).battery_percent().ok();
-                draw_clock(&mut hw.display, time, battery);
+                if clock_dimmed {
+                    draw_power_saver_clock(&mut hw.display, time);
+                } else {
+                    let battery = Axp2101::new(&mut hw.i2c, I2C_ADDR_PMU).battery_percent().ok();
+                    draw_blue_watchface(&mut hw.display, time, battery);
+                }
                 shown_minute = time.minute;
             }
         }
@@ -315,7 +367,15 @@ async fn ui_task(mut hw: Hardware) {
             let mut touch = Input::new(hw.touch_int.reborrow(), InputConfig::default().with_pull(Pull::Up));
             // Al apoyar el dedo sondeamos sólo durante el gesto (25 ms); en
             // reposo seguimos durmiendo hasta IRQ, hora nueva o el minuto.
-            let timeout = if touch_start.is_some() { Duration::from_millis(25) } else { Duration::from_secs(30) };
+            let timeout = if touch_start.is_some() {
+                Duration::from_millis(25)
+            } else if !showing_summary && !clock_dimmed {
+                Duration::from_millis(CLOCK_DIM_AFTER_MS.saturating_sub((Instant::now() - clock_idle_since).as_millis()))
+            } else if !showing_summary {
+                Duration::from_millis(CLOCK_SLEEP_AFTER_MS.saturating_sub((Instant::now() - clock_idle_since).as_millis()))
+            } else {
+                Duration::from_secs(30)
+            };
             select4(button.wait_for_low(), touch.wait_for_falling_edge(), TIME_UPDATE.receive(), Timer::after(timeout)).await
         };
         let mut read_touch = false;
@@ -346,6 +406,12 @@ async fn ui_task(mut hw: Hardware) {
             let point = Ft5x06::new(&mut hw.i2c, I2C_ADDR_TOUCH, &mut hw.touch_reset).read().ok().flatten();
             match point {
                 Some((x, y)) if !showing_summary => {
+                    clock_idle_since = Instant::now();
+                    if clock_dimmed {
+                        hw.display.send_command_with_data(0x51, &[BRIGHTNESS_40_PERCENT]).ok();
+                        clock_dimmed = false;
+                        shown_minute = 255;
+                    }
                     if touch_start.is_none() {
                         touch_start = Some((x, y));
                         summary_hold_deadline = Some(Instant::now() + Duration::from_millis(600));
