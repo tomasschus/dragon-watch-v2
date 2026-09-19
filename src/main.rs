@@ -336,9 +336,15 @@ async fn ui_task(mut hw: Hardware) {
     let mut clock_idle_since = Instant::now();
     let mut clock_dimmed = false;
     let mut shown_minute = 255;
-    // El programador USB usa GPIO0 durante el reset. Darle tiempo para soltar
-    // la línea evita interpretar ese pulso técnico como un apagado del reloj.
-    Timer::after(Duration::from_secs(2)).await;
+    // Mostrar hora apenas el AMOLED está listo. El touch se inicia después
+    // para no retrasar la primera imagen al salir de deep sleep.
+    let initial_time = Pcf85063a::new(&mut hw.i2c, I2C_ADDR_RTC).get().unwrap_or(DateTime { year: 2026, month: 1, day: 1, weekday: 0, hour: 0, minute: 0, second: 0 });
+    draw_power_saver_clock(&mut hw.display, initial_time);
+    let mut touch_delay = Delay::new();
+    Ft5x06::new(&mut hw.i2c, I2C_ADDR_TOUCH, &mut hw.touch_reset).init(&mut touch_delay).ok();
+    let battery = Axp2101::new(&mut hw.i2c, I2C_ADDR_PMU).battery_percent().ok();
+    draw_blue_watchface(&mut hw.display, initial_time, battery);
+    shown_minute = initial_time.minute;
     clock_idle_since = Instant::now();
     loop {
         if !showing_summary {
@@ -473,7 +479,6 @@ fn main() -> ! {
     delay.delay_millis(20);
     Pcf85063a::new(&mut i2c, I2C_ADDR_RTC).init().ok();
     let mut touch_reset = Output::new(p.GPIO9, Level::High, OutputConfig::default());
-    Ft5x06::new(&mut i2c, I2C_ADDR_TOUCH, &mut touch_reset).init(&mut delay).ok();
     let (rx, rxd, tx, txd) = dma_buffers!(DMA_CHUNK_SIZE); let rx = DmaRxBuf::new(rxd, rx).unwrap(); let tx = DmaTxBuf::new(txd, tx).unwrap();
     let spi = Spi::new(p.SPI2, SpiConfig::default().with_frequency(Rate::from_mhz(40)).with_mode(Mode::_0)).unwrap().with_sio0(p.GPIO4).with_sio1(p.GPIO5).with_sio2(p.GPIO6).with_sio3(p.GPIO7).with_cs(p.GPIO12).with_sck(p.GPIO11).with_dma(p.DMA_CH0).with_buffers(rx, tx);
     let reset = GpioReset { pin: Output::new(p.GPIO8, Level::High, OutputConfig::default()), delay };
