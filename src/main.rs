@@ -41,7 +41,9 @@ use static_cell::StaticCell;
 mod drivers;
 mod assets;
 mod ui;
+mod pages;
 use drivers::{pmu::Axp2101, rtc::{DateTime, Pcf85063a}, touch::Ft5x06};
+use pages::PAGES;
 
 const I2C_ADDR_PMU: u8 = 0x34;
 const I2C_ADDR_RTC: u8 = 0x51;
@@ -58,18 +60,6 @@ static PANEL_INIT: &[(u8, &[u8], u16)] = &[
     (0x29, &[], 120), (0x30, &[0x00, 0x80, 0x00, 0x02], 10),
     (0xc4, &[0x80], 0), (0x44, &[0x01, 0xd1], 0), (0x53, &[0x20], 0),
     (0x63, &[0xff], 0), (0x51, &[BRIGHTNESS_40_PERCENT], 0),
-];
-struct Page { title: &'static str, lines: &'static [&'static str] }
-const PAGES: [Page; 9] = [
-    Page { title: "MRU", lines: &["MOVIMIENTO RECTILINEO UNIFORME", "a(t) = 0", "v(t) = v0 = constante", "x(t) = x0 + v0*t", "", "dx = x(t)-x0 = v0*t", "vm = dx/dt = v0"] },
-    Page { title: "MRUV", lines: &["MOVIMIENTO RECTILINEO UNIFORMEMENTE VARIADO", "a(t) = a = constante", "v(t) = v0 + a*t", "x(t) = x0 + v0*t + 0.5*a*t^2", "", "dx = v0*t + 0.5*a*t^2", "v^2 = v0^2 + 2*a*(x-x0)", "am = (vf-v0)/t"] },
-    Page { title: "CAIDA LIBRE", lines: &["Eje positivo hacia abajo; a(t) = g", "v(t) = v0 + g*t", "y(t) = y0 + v0*t + 0.5*g*t^2", "", "Si se suelta (v0=0):", "v(t) = g*t", "y(t) = y0 + 0.5*g*t^2", "g = 9.8 m/s^2 (o 10 si lo indica el ejercicio)"] },
-    Page { title: "TIRO VERTICAL", lines: &["Eje positivo hacia arriba; a(t) = -g", "v(t) = v0 - g*t", "y(t) = y0 + v0*t - 0.5*g*t^2", "", "v^2 = v0^2 - 2*g*(y-y0)", "Punto mas alto: v(t)=0", "t subida = v0/g", "y max = y0 + v0^2/(2*g)", "Si regresa al nivel inicial: t total=2*v0/g"] },
-    Page { title: "MCU", lines: &["MOVIMIENTO CIRCULAR UNIFORME", "alfa(t) = 0", "w(t) = w0 = constante", "O(t) = O0 + w0*t", "Oa - Ob = 2*pi*N", "arco(t) = R*O(t)", "v(t) = R*w0", "ac(t) = v(t)^2/R", "", "PERIODO", "T = 1/f", "T = 60/RPM", "T = 2*pi/w", "w = 2*pi*f", "", "CONVERSION DE RPM", "w (rad/s) = RPM*2*pi/60", "Oa = angulo final; Ob = angulo inicial", "N = cantidad de vueltas"] },
-    Page { title: "MCUV", lines: &["MOVIMIENTO CIRCULAR VARIADO", "alfa(t) = constante", "w(t) = w0 + alfa*t", "O(t) = O0 + w0*t", "+ 0.5*alfa*t^2", "v(t) = R*w(t)", "at(t) = R*alfa", "ac(t) = R*w(t)^2", "", "SIN TIEMPO", "w^2 = w0^2 + 2*alfa*(O-O0)"] },
-    Page { title: "MOV. RELATIVO", lines: &["Para A respecto de B:", "xA/B(t) = xA(t) - xB(t)", "vA/B(t) = vA(t) - vB(t)", "aA/B(t) = aA(t) - aB(t)", "", "MRU de cada movil:", "xA(t)=xA0+vA*t", "xB(t)=xB0+vB*t", "Encuentro: xA(t)=xB(t)", "t = (xB0-xA0)/(vA-vB)", "", "MRUV: x(t)=x0+v0*t+0.5*a*t^2 para cada movil"] },
-    Page { title: "PROYECTIL", lines: &["V0x = V0*cos(ang)", "V0y = V0*sin(ang)", "x(t) = x0 + V0x*t", "y(t) = y0 + V0y*t - 0.5*g*t^2", "vx(t) = V0x", "vy(t) = V0y - g*t", "", "Truco: COS -> X, SIN -> Y", "Si el angulo se mide desde la vertical, se invierten."] },
-    Page { title: "SIMBOLOS Y SIGNOS", lines: &["x,y posicion; dx desplazamiento; t tiempo", "v velocidad; a aceleracion; g gravedad", "angulo = posicion angular; R = radio", "velocidad angular y aceleracion angular", "", "Elegir sentido positivo y conservar los signos.", "Usar SI: m, s, m/s, m/s^2.", "km/h a m/s: dividir por 3.6; m/s a km/h: multiplicar por 3.6."] },
 ];
 
 type MyI2c = I2c<'static, esp_hal::Blocking>;
