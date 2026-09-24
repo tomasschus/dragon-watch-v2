@@ -1,0 +1,16 @@
+[package]
+name = "resumen-watch-idf-prototype"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+
+[dependencies]
+esp-idf-sys = "0.37.2"
+
+[build-dependencies]
+embuild = "0.33"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1

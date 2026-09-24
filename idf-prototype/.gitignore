@@ -1,0 +1,5 @@
+/.embuild/
+/target/
+/sdkconfig
+/sdkconfig.old
+/managed_components/
