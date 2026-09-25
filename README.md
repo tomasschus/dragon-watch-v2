@@ -5,7 +5,8 @@ Firmware Rust `no_std` para el reloj ESP32-S3 AMOLED 410×502.
 ## Uso
 
 - Botón lateral: apagado real (deep sleep); el siguiente pulso inicia siempre en el reloj.
-- Toque: abre el resumen de fórmulas.
+- Toque breve: abre el menú de apps, vacío por ahora; otro toque vuelve al reloj.
+- Mantener presionado: abre el resumen de fórmulas.
 - Deslizamiento horizontal: cambia entre MRU, MRUV, movimiento circular y movimiento relativo. Los puntos inferiores indican la página activa.
 - No hay apagado automático de pantalla.
 

@@ -12,8 +12,6 @@ use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoTextStyle},
     pixelcolor::Rgb888,
     prelude::*,
-    primitives::{Circle, PrimitiveStyle, Rectangle},
-    geometry::Size,
     text::Text,
 };
 use esp_alloc as _;
@@ -41,9 +39,9 @@ use static_cell::StaticCell;
 mod drivers;
 mod assets;
 mod ui;
+mod apps;
 mod pages;
 use drivers::{pmu::Axp2101, rtc::{DateTime, Pcf85063a}, touch::Ft5x06};
-use pages::PAGES;
 
 const I2C_ADDR_PMU: u8 = 0x34;
 const I2C_ADDR_RTC: u8 = 0x51;
@@ -52,6 +50,10 @@ const BRIGHTNESS_40_PERCENT: u8 = 102;
 const BRIGHTNESS_10_PERCENT: u8 = 26;
 const CLOCK_DIM_AFTER_MS: u64 = 5_000;
 const CLOCK_SLEEP_AFTER_MS: u64 = 65_000;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UiScreen { Watch, Formula, Apps, RunningApp }
+
 static PANEL_INIT: &[(u8, &[u8], u16)] = &[
     // Secuencia completa validada para el SH8601 del reloj. 0x29 solo no
     // alcanza: 0x30/0x44/0xc4 configuran la ventana y el modo AMOLED.
@@ -63,7 +65,13 @@ static PANEL_INIT: &[(u8, &[u8], u16)] = &[
 ];
 
 type MyI2c = I2c<'static, esp_hal::Blocking>;
-type MyDisplay = Sh8601Driver<Panel, GpioReset, Rgb888>;
+pub(crate) type MyDisplay = Sh8601Driver<Panel, GpioReset, Rgb888>;
+
+impl apps::AppDisplay for MyDisplay {
+    const PARTIAL_REFRESH: bool = false;
+    fn refresh_rect(&mut self, _x: i32, _y: i32, _width: u32, _height: u32) {}
+    fn refresh_all(&mut self) { self.flush().ok(); }
+}
 static EXEC: StaticCell<esp_rtos::embassy::Executor> = StaticCell::new();
 static TIME_UPDATE: Channel<CriticalSectionRawMutex, DateTime, 1> = Channel::new();
 
@@ -168,130 +176,6 @@ fn draw_blue_watchface(display: &mut MyDisplay, time: DateTime, battery_percent:
     }
     display.flush().ok();
 }
-const SUMMARY_COLUMNS: usize = 40;
-
-fn section_heading(text: &str) -> bool {
-    let mut has_letter = false;
-    text.chars().all(|c| {
-        if c.is_ascii_alphabetic() { has_letter = true; !c.is_ascii_lowercase() } else { true }
-    }) && has_letter
-}
-
-fn standalone_line(text: &str) -> bool {
-    section_heading(text) || text.contains('=')
-}
-
-fn draw_summary_line(display: &mut MyDisplay, text: &str, p: Point, style: MonoTextStyle<Rgb888>) {
-    // FONT_10X20 no conoce Unicode y dibujaria '?' para α/ω/θ.
-    // Sustituimos esos caracteres por espacios y luego pintamos sus glifos.
-    let mut ascii_line: String<64> = String::new();
-    for ch in text.chars() {
-        if matches!(ch, 'α' | 'ω' | 'θ') { let _ = ascii_line.push(' '); }
-        else { let _ = ascii_line.push(ch); }
-    }
-    Text::new(&ascii_line, p, style).draw(display).ok();
-    for (i, ch) in text.chars().enumerate() {
-        let rows: &[u8] = match ch {
-            'α' => &[0b01110, 0b00001, 0b01111, 0b10001, 0b01111, 0, 0],
-            'ω' => &[0b10001, 0b10001, 0b10101, 0b10101, 0b01010, 0, 0],
-            'θ' => &[0b01110, 0b10001, 0b11111, 0b10001, 0b01110, 0, 0],
-            _ => continue,
-        };
-        let x = p.x + (i as i32) * 10;
-        for (ry, bits) in rows.iter().enumerate() {
-            for rx in 0..5 {
-                if bits & (1 << (4 - rx)) != 0 {
-                    Rectangle::new(Point::new(x + rx * 2, p.y - 15 + ry as i32 * 2), Size::new(2, 2))
-                        .into_styled(PrimitiveStyle::with_fill(Rgb888::WHITE)).draw(display).ok();
-                }
-            }
-        }
-    }
-}
-
-fn wrapped_page_height(lines: &[&str]) -> i32 {
-    let mut height = 0;
-    let mut columns = 0usize;
-    for entry in lines {
-        if entry.is_empty() {
-            if columns > 0 { height += 25; columns = 0; }
-            height += 10;
-        } else if standalone_line(entry) {
-            if columns > 0 { height += 25; columns = 0; }
-            height += 27;
-        } else {
-            for word in entry.split_whitespace() {
-                let needed = word.len() + usize::from(columns > 0);
-                if columns > 0 && columns + needed > SUMMARY_COLUMNS {
-                    height += 25;
-                    columns = 0;
-                }
-                columns += word.len() + usize::from(columns > 0);
-            }
-        }
-    }
-    if columns > 0 { height += 25; }
-    height
-}
-
-fn draw_wrapped_page(display: &mut MyDisplay, lines: &[&str], mut y: i32, body: MonoTextStyle<Rgb888>) {
-    let mut line: String<48> = String::new();
-    for entry in lines {
-        if entry.is_empty() {
-            if !line.is_empty() {
-                draw_summary_line(display, &line, Point::new(4, y), body);
-                y += 25; line.clear();
-            }
-            y += 10;
-        } else if standalone_line(entry) {
-            if !line.is_empty() {
-                Text::new(&line, Point::new(4, y), body).draw(display).ok();
-                y += 25; line.clear();
-            }
-            Text::new(entry, Point::new(4, y), body).draw(display).ok();
-            y += 27;
-        } else {
-            for word in entry.split_whitespace() {
-                let needed = word.len() + usize::from(!line.is_empty());
-                if !line.is_empty() && line.len() + needed > SUMMARY_COLUMNS {
-                    draw_summary_line(display, &line, Point::new(4, y), body);
-                    y += 25; line.clear();
-                }
-                if !line.is_empty() { let _ = line.push(' '); }
-                let _ = line.push_str(word);
-            }
-        }
-    }
-    if !line.is_empty() { draw_summary_line(display, &line, Point::new(4, y), body); }
-}
-
-fn summary_max_scroll(page: usize) -> i32 {
-    let content_height = 34 + wrapped_page_height(PAGES[page].lines) + 38;
-    // Zona visible entre y=58 y y=440, con un pequeño margen final. Cada
-    // página tiene su propia posición de scroll.
-    (content_height - 382).max(0)
-}
-
-fn draw_summary(display: &mut MyDisplay, page: usize, scroll: i32) {
-    clear(display);
-    let title = MonoTextStyle::new(&FONT_10X20, Rgb888::WHITE);
-    // Zona segura: la pantalla es redondeada. Dejamos aire arriba/abajo y
-    // márgenes laterales para que fórmulas y paginador no choquen con bordes.
-    let body = MonoTextStyle::new(&FONT_10X20, Rgb888::WHITE);
-    let page_data = &PAGES[page];
-    let y = 64 - scroll;
-    Text::new(page_data.title, Point::new(8, y), title).draw(display).ok();
-    draw_wrapped_page(display, page_data.lines, y + 34, body);
-    let dots_width = (PAGES.len() as i32 - 1) * 15 + 7;
-    let dots_x = 205 - dots_width / 2;
-    for i in 0..PAGES.len() {
-        let color = if i == page { Rgb888::WHITE } else { Rgb888::new(70, 70, 70) };
-        Circle::new(Point::new(dots_x + i as i32 * 15, 442), 7)
-            .into_styled(PrimitiveStyle::with_fill(color)).draw(display).ok();
-    }
-    display.flush().ok();
-}
-
 fn parse_time(line: &[u8]) -> Option<DateTime> {
     let s = core::str::from_utf8(line).ok()?.trim();
     let v = s.strip_prefix("TIME,")?;
@@ -316,18 +200,20 @@ async fn usb_time_task(mut usb: UsbSerialJtag<'static, esp_hal::Async>) {
 
 #[embassy_executor::task]
 async fn ui_task(mut hw: Hardware) {
-    let mut showing_summary = false;
-    let mut summary_page = 0usize;
-    let mut page_scroll = [0i32; PAGES.len()];
-    let mut touch_start: Option<(u16, u16)> = None;
-    let mut last_touch: Option<(u16, u16)> = None;
-    let mut page_changed_this_touch = false;
-    let mut summary_hold_deadline: Option<Instant> = None;
+    let mut screen = UiScreen::Watch;
+    let mut formula_state = apps::formulas::State::new();
+    let mut active_app: Option<usize> = None;
+    let mut app_state = apps::AppState::new();
+    let mut menu_page = 0usize;
+    let mut touch_start: Option<Point> = None;
+    let mut last_touch: Option<Point> = None;
+    let mut touch_moved = false;
+    let mut long_press_deadline: Option<Instant> = None;
+    let mut long_press_opened = false;
     let mut clock_idle_since = Instant::now();
     let mut clock_dimmed = false;
     let mut shown_minute = 255;
-    // Mostrar hora apenas el AMOLED está listo. El touch se inicia después
-    // para no retrasar la primera imagen al salir de deep sleep.
+
     let initial_time = Pcf85063a::new(&mut hw.i2c, I2C_ADDR_RTC).get().unwrap_or(DateTime { year: 2026, month: 1, day: 1, weekday: 0, hour: 0, minute: 0, second: 0 });
     draw_power_saver_clock(&mut hw.display, initial_time);
     let mut touch_delay = Delay::new();
@@ -336,122 +222,203 @@ async fn ui_task(mut hw: Hardware) {
     draw_blue_watchface(&mut hw.display, initial_time, battery);
     shown_minute = initial_time.minute;
     clock_idle_since = Instant::now();
+
     loop {
-        if !showing_summary {
-            let clock_idle_ms = (Instant::now() - clock_idle_since).as_millis();
-            if clock_idle_ms >= CLOCK_SLEEP_AFTER_MS {
-                turn_off(hw);
-            }
-            if !clock_dimmed && clock_idle_ms >= CLOCK_DIM_AFTER_MS {
+        if screen != UiScreen::Formula {
+            let idle_ms = (Instant::now() - clock_idle_since).as_millis();
+            if idle_ms >= CLOCK_SLEEP_AFTER_MS { turn_off(hw); }
+            if screen == UiScreen::Watch && !clock_dimmed && idle_ms >= CLOCK_DIM_AFTER_MS {
                 hw.display.send_command_with_data(0x51, &[BRIGHTNESS_10_PERCENT]).ok();
                 clock_dimmed = true;
                 shown_minute = 255;
             }
-            let time = Pcf85063a::new(&mut hw.i2c, I2C_ADDR_RTC).get().unwrap_or(DateTime { year: 2026, month: 1, day: 1, weekday: 0, hour: 0, minute: 0, second: 0 });
-            if time.minute != shown_minute {
-                if clock_dimmed {
-                    draw_power_saver_clock(&mut hw.display, time);
-                } else {
-                    let battery = Axp2101::new(&mut hw.i2c, I2C_ADDR_PMU).battery_percent().ok();
-                    draw_blue_watchface(&mut hw.display, time, battery);
+            if screen == UiScreen::Watch {
+                let time = Pcf85063a::new(&mut hw.i2c, I2C_ADDR_RTC).get().unwrap_or(DateTime { year: 2026, month: 1, day: 1, weekday: 0, hour: 0, minute: 0, second: 0 });
+                if time.minute != shown_minute {
+                    if clock_dimmed { draw_power_saver_clock(&mut hw.display, time); }
+                    else {
+                        let battery = Axp2101::new(&mut hw.i2c, I2C_ADDR_PMU).battery_percent().ok();
+                        draw_blue_watchface(&mut hw.display, time, battery);
+                    }
+                    shown_minute = time.minute;
                 }
-                shown_minute = time.minute;
             }
         }
+
         let event = {
             let mut button = Input::new(hw.button.reborrow(), InputConfig::default().with_pull(Pull::Up));
             let mut touch = Input::new(hw.touch_int.reborrow(), InputConfig::default().with_pull(Pull::Up));
-            // Al apoyar el dedo sondeamos sólo durante el gesto (25 ms); en
-            // reposo seguimos durmiendo hasta IRQ, hora nueva o el minuto.
             let timeout = if touch_start.is_some() {
                 Duration::from_millis(25)
-            } else if !showing_summary && !clock_dimmed {
+            } else if screen == UiScreen::RunningApp {
+                Duration::from_millis(if <MyDisplay as apps::AppDisplay>::PARTIAL_REFRESH { 16 } else { 50 })
+            } else if screen == UiScreen::Watch && !clock_dimmed {
                 Duration::from_millis(CLOCK_DIM_AFTER_MS.saturating_sub((Instant::now() - clock_idle_since).as_millis()))
-            } else if !showing_summary {
+            } else if screen != UiScreen::Formula {
                 Duration::from_millis(CLOCK_SLEEP_AFTER_MS.saturating_sub((Instant::now() - clock_idle_since).as_millis()))
             } else {
                 Duration::from_secs(30)
             };
             select4(button.wait_for_low(), touch.wait_for_falling_edge(), TIME_UPDATE.receive(), Timer::after(timeout)).await
         };
+
         let mut read_touch = false;
         match event {
             Either4::First(_) => {
-                // GPIO0 también es la fuente de wake. Esperar a que el usuario
-                // lo suelte antes de deep sleep evita un wake/reset instantáneo.
                 let confirmed_press = {
                     let mut button = Input::new(hw.button.reborrow(), InputConfig::default().with_pull(Pull::Up));
                     Timer::after(Duration::from_millis(40)).await;
-                    if button.is_low() {
-                        button.wait_for_high().await;
-                        true
-                    } else {
-                        false
-                    }
+                    if button.is_low() { button.wait_for_high().await; true } else { false }
                 };
                 if confirmed_press {
                     Timer::after(Duration::from_millis(80)).await;
-                    turn_off(hw);
+                    if screen == UiScreen::RunningApp {
+                        active_app = None;
+                        screen = UiScreen::Apps;
+                        touch_start = None;
+                        last_touch = None;
+                        touch_moved = false;
+                        long_press_deadline = None;
+                        long_press_opened = false;
+                        clock_idle_since = Instant::now();
+                        apps::draw_menu(&mut hw.display, menu_page);
+                    } else {
+                        turn_off(hw);
+                    }
                 }
             }
             Either4::Second(_) => read_touch = true,
-            Either4::Third(time) => { Pcf85063a::new(&mut hw.i2c, I2C_ADDR_RTC).set(time).ok(); println!("RTC updated from USB"); shown_minute = 255; }
+            Either4::Third(time) => {
+                Pcf85063a::new(&mut hw.i2c, I2C_ADDR_RTC).set(time).ok();
+                println!("RTC updated from USB");
+                shown_minute = 255;
+            }
             Either4::Fourth(_) => read_touch = touch_start.is_some(),
         }
-        if read_touch {
-            let point = Ft5x06::new(&mut hw.i2c, I2C_ADDR_TOUCH, &mut hw.touch_reset).read().ok().flatten();
-            match point {
-                Some((x, y)) if !showing_summary => {
-                    clock_idle_since = Instant::now();
-                    if clock_dimmed {
-                        hw.display.send_command_with_data(0x51, &[BRIGHTNESS_40_PERCENT]).ok();
-                        clock_dimmed = false;
-                        shown_minute = 255;
-                    }
-                    if touch_start.is_none() {
-                        touch_start = Some((x, y));
-                        summary_hold_deadline = Some(Instant::now() + Duration::from_millis(600));
-                    }
-                    // Entrar sólo por pulsación sostenida; un toque breve no
-                    // cambia la esfera del reloj por accidente.
-                    if summary_hold_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                        showing_summary = true;
-                        touch_start = Some((x, y)); last_touch = Some((x, y));
-                        summary_hold_deadline = None;
-                        page_changed_this_touch = false;
-                        draw_summary(&mut hw.display, summary_page, page_scroll[summary_page]);
-                    }
+
+        if screen == UiScreen::RunningApp {
+            if let Some(app) = active_app.and_then(apps::get) {
+                if (app.tick)(&mut hw.display, &mut app_state) == apps::AppAction::Close {
+                    screen = UiScreen::Apps;
+                    active_app = None;
+                    apps::draw_menu(&mut hw.display, menu_page);
                 }
-                Some((x, y)) => {
-                    // Cada nuevo dedo sobre una página debe iniciar un gesto.
-                    // Antes sólo se inicializaba el toque que abría el resumen.
-                    if touch_start.is_none() {
-                        touch_start = Some((x, y));
-                        last_touch = Some((x, y));
-                        page_changed_this_touch = false;
-                    } else if let (Some((start_x, _)), Some((_, previous_y))) = (touch_start, last_touch) {
-                        let total_dx = x as i32 - start_x as i32;
-                        // El cambio de página se decide directamente desde X;
-                        // así no queda bloqueado por ruido vertical del FT5x06.
-                        if !page_changed_this_touch && total_dx.abs() >= 20 {
-                                summary_page = if total_dx < 0 { (summary_page + 1) % PAGES.len() } else { (summary_page + PAGES.len() - 1) % PAGES.len() };
-                                page_changed_this_touch = true;
-                                draw_summary(&mut hw.display, summary_page, page_scroll[summary_page]);
-                        } else if !page_changed_this_touch {
-                            // Si no hubo swipe lateral, el arrastre vertical
-                            // desplaza únicamente la página actual.
-                            let dy = y as i32 - previous_y as i32;
-                            if dy != 0 {
-                                page_scroll[summary_page] = (page_scroll[summary_page] - dy)
-                                    .clamp(0, summary_max_scroll(summary_page));
-                                draw_summary(&mut hw.display, summary_page, page_scroll[summary_page]);
+            }
+        }
+        if !read_touch { continue; }
+        let point = Ft5x06::new(&mut hw.i2c, I2C_ADDR_TOUCH, &mut hw.touch_reset).read().ok().flatten()
+            .map(|(x, y)| Point::new(x as i32, y as i32));
+
+        if let Some(point) = point {
+            clock_idle_since = Instant::now();
+            if screen == UiScreen::Watch && clock_dimmed {
+                hw.display.send_command_with_data(0x51, &[BRIGHTNESS_40_PERCENT]).ok();
+                clock_dimmed = false;
+                shown_minute = 255;
+            }
+
+            if touch_start.is_none() {
+                touch_start = Some(point);
+                last_touch = Some(point);
+                touch_moved = false;
+                long_press_opened = false;
+                long_press_deadline = if matches!(screen, UiScreen::Watch | UiScreen::Apps) {
+                    Some(Instant::now() + Duration::from_millis(600))
+                } else { None };
+                match screen {
+                    UiScreen::Formula => formula_state.touch(&mut hw.display, apps::TouchEvent::Down(point)),
+                    UiScreen::RunningApp => {
+                        if let Some(app) = active_app.and_then(apps::get) {
+                            if (app.touch)(&mut hw.display, &mut app_state, apps::TouchEvent::Down(point)) == apps::AppAction::Close {
+                                screen = UiScreen::Apps;
+                                active_app = None;
+                                long_press_opened = true;
+                                apps::draw_menu(&mut hw.display, menu_page);
                             }
                         }
                     }
-                    last_touch = Some((x, y));
+                    _ => {}
                 }
-                None => { touch_start = None; last_touch = None; summary_hold_deadline = None; page_changed_this_touch = false; }
+            } else {
+                if let Some(start) = touch_start {
+                    if (point.x - start.x).abs() > 20 || (point.y - start.y).abs() > 20 {
+                        touch_moved = true;
+                        long_press_deadline = None;
+                    }
+                }
+                match screen {
+                    UiScreen::Formula => formula_state.touch(&mut hw.display, apps::TouchEvent::Move(point)),
+                    UiScreen::RunningApp => {
+                        if let Some(app) = active_app.and_then(apps::get) {
+                            if (app.touch)(&mut hw.display, &mut app_state, apps::TouchEvent::Move(point)) == apps::AppAction::Close {
+                                screen = UiScreen::Apps;
+                                active_app = None;
+                                long_press_opened = true;
+                                apps::draw_menu(&mut hw.display, menu_page);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                last_touch = Some(point);
             }
+
+            if !touch_moved && !long_press_opened && long_press_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                long_press_deadline = None;
+                long_press_opened = true;
+                screen = UiScreen::Formula;
+                formula_state.open(&mut hw.display, point);
+            }
+        } else if let Some(start) = touch_start {
+            let end = last_touch.unwrap_or(start);
+            match screen {
+                UiScreen::Formula => formula_state.touch(&mut hw.display, apps::TouchEvent::Up(end)),
+                UiScreen::RunningApp => {
+                    if let Some(app) = active_app.and_then(apps::get) {
+                        if (app.touch)(&mut hw.display, &mut app_state, apps::TouchEvent::Up(end)) == apps::AppAction::Close {
+                            screen = UiScreen::Apps;
+                            active_app = None;
+                            apps::draw_menu(&mut hw.display, menu_page);
+                        }
+                    }
+                }
+                UiScreen::Watch if !long_press_opened && !touch_moved => {
+                    screen = UiScreen::Apps;
+                    menu_page = 0;
+                    apps::draw_menu(&mut hw.display, menu_page);
+                }
+                UiScreen::Apps if !long_press_opened => {
+                    let dx = end.x - start.x;
+                    if touch_moved && dx.abs() >= 30 {
+                        let max_page = apps::page_count().saturating_sub(1);
+                        if dx < 0 { menu_page = (menu_page + 1).min(max_page); }
+                        else { menu_page = menu_page.saturating_sub(1); }
+                        apps::draw_menu(&mut hw.display, menu_page);
+                    } else if !touch_moved {
+                        if let Some(index) = apps::hit_test(menu_page, start) {
+                            if let Some(app) = apps::get(index) {
+                                active_app = Some(index);
+                                app_state = apps::AppState::new();
+                                screen = UiScreen::RunningApp;
+                                (app.open)(&mut hw.display, &mut app_state);
+                            }
+                        } else {
+                            screen = UiScreen::Watch;
+                            let time = Pcf85063a::new(&mut hw.i2c, I2C_ADDR_RTC).get().unwrap_or(DateTime { year: 2026, month: 1, day: 1, weekday: 0, hour: 0, minute: 0, second: 0 });
+                            let battery = Axp2101::new(&mut hw.i2c, I2C_ADDR_PMU).battery_percent().ok();
+                            draw_blue_watchface(&mut hw.display, time, battery);
+                            shown_minute = time.minute;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            touch_start = None;
+            last_touch = None;
+            touch_moved = false;
+            long_press_deadline = None;
+            long_press_opened = false;
+            if screen == UiScreen::Watch { clock_idle_since = Instant::now(); }
         }
     }
 }

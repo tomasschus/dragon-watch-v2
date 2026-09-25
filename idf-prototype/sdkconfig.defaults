@@ -1,3 +1,16 @@
 CONFIG_PM_ENABLE=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=160
 # El reloj actual solo usa deep sleep explícito con el botón.
 CONFIG_FREERTOS_USE_TICKLESS_IDLE=n
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# La pantalla 410x502 RGB888 necesita 617 kB de framebuffer.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+# El módulo ya fue comprobado en el reloj. Omitir el test completo de 8 MB
+# ahorra ~0.4 s en cada wake de deep sleep.
+CONFIG_SPIRAM_MEMTEST=n

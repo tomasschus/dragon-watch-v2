@@ -1,8 +1,8 @@
-# Prototipo de migración a ESP-IDF
+# Firmware ESP-IDF en migración
 
-Este binario comprueba la gestión de frecuencia dinámica en el ESP32-S3. No es
-todavía el firmware del reloj: no inicializa la pantalla ni entra en deep sleep.
-No flashearlo para uso diario.
+Este binario integra la pantalla SH8601 QSPI, RTC PCF85063A, PMU AXP2101,
+control táctil, USB Serial/JTAG, la UI actual y perfiles de frecuencia. Falta
+validar el comportamiento en el reloj físico.
 
 ## Compilar
 
@@ -20,12 +20,12 @@ cargo build --release --offline
 
 Las rutas son ejemplos de esta máquina; deben ajustarse en otros equipos.
 
-El perfil mantiene 80 MHz sin una app activa y solicita 160 MHz mientras
-`PerformanceGuard` está vivo. `light_sleep_enable = false` impide que este
-prototipo cambie de modo de sueño automáticamente. El deep sleep del firmware
-actual no se modifica.
+El perfil mantiene 80 MHz sin una app activa y solicita 160 MHz mientras la app
+con `PowerProfile::Performance` está abierta. `light_sleep_enable = false`
+desactiva el light sleep automático. El botón configura `ext0` en GPIO0 y entra
+en deep sleep después de apagar panel, táctil y rieles de alimentación.
 
-La compilación del 24/09/2026 terminó correctamente en `release` con ESP-IDF
-5.3. El `sdkconfig` generado confirmó `CONFIG_PM_ENABLE=y`, ESP32-S3 y
-`CONFIG_FREERTOS_USE_TICKLESS_IDLE` desactivado. Falta verificar los MHz y el
-consumo con el reloj físico.
+La integración compiló en `release` con ESP-IDF 5.3. El `sdkconfig` generado
+confirmó `CONFIG_PM_ENABLE=y`, ESP32-S3 y `CONFIG_FREERTOS_USE_TICKLESS_IDLE`
+desactivado. Faltan pruebas físicas: imagen QSPI, toque, cambio real de MHz,
+sincronización USB, despertar por GPIO0 y consumo en deep sleep.

@@ -1,7 +1,8 @@
 # Migración del reloj a ESP-IDF
 
-Estado: prototipo de gestión de frecuencia. El firmware de uso diario sigue en
-`src/main.rs` y usa `esp-hal`. No se flasheó el prototipo.
+Estado: port funcional compilable, aún sin validación en el reloj físico. El
+firmware anterior sigue disponible en `src/main.rs` y usa `esp-hal`; el nuevo
+firmware está en `idf-prototype/`.
 
 ## Objetivo
 
@@ -22,21 +23,47 @@ Estado: prototipo de gestión de frecuencia. El firmware de uso diario sigue en
 | Framebuffer | 410 × 502 RGB888, PSRAM | habilitar PSRAM en `sdkconfig`; comprobar memoria y DMA |
 | USB hora | USB Serial/JTAG, comando `TIME,YYYY-MM-DDTHH:MM:SS` | lector serie equivalente |
 
-## Orden de portado
+## Estado del portado
 
-1. Compilar este prototipo con `CONFIG_PM_ENABLE` y verificar que el bloqueo
-   de frecuencia se adquiere y libera. Medir la frecuencia real en hardware.
-2. Portar I²C, PMU, RTC y táctil; comprobar lectura de hora, batería y toque.
-3. Portar pantalla QSPI. El driver `Ws18AmoledDriver` de `sh8601-rs` usa tipos
-   concretos de `esp-hal`, así que debe reemplazarse; la interfaz de dibujo
-   `ControllerInterface` y `embedded-graphics` pueden conservarse.
-4. Portar eventos, temporizadores y USB. Mantener navegación y apps actuales.
-5. Reproducir exactamente la secuencia de `turn_off`: brillo cero, display off,
-   panel sleep, táctil sleep, alimentación de pantalla off, RESET táctil bajo,
-   despertar `ext0` por GPIO0 bajo, deep sleep. Comprobar el estado de GPIO0 al
-   despertar, pues ESP-IDF deja el pin configurado como RTC IO.
-6. Medir consumo en deep sleep y autonomía frente al firmware actual antes de
-   sustituir el binario principal.
+Implementado en `idf-prototype/`:
+
+- ESP-IDF 5.3 con gestión dinámica de energía habilitada. Perfil base de 80 MHz
+  y bloqueo de rendimiento de 160 MHz durante la ejecución de una app; el guard
+  se libera al cerrarla.
+- Adaptadores para I²C, RTC, PMU, táctil, USB Serial/JTAG, reloj, navegación y
+  apagado explícito a deep sleep. La interfaz de apps existente se integra por
+  módulos compartidos; una app nueva se registra con un icono y su descriptor,
+  que especifica el perfil de energía.
+- Driver SH8601 QSPI implementado sobre SPI de ESP-IDF, conservando la
+  interfaz `embedded-graphics`. El protocolo se contrastó con el proyecto
+  local `dragon-watch-idf` y el firmware C anterior.
+- Tickless idle/light sleep automático desactivado para evitar alterar el
+  comportamiento de deep sleep ya existente.
+- Inicio más rápido tras deep sleep: se omite el test de memoria de los 8 MB de
+  PSRAM (ya había pasado en el reloj); el primer reloj simple se dibuja apenas
+  termina la inicialización del panel. El log de arranque pasó de ~892 ms a
+  ~473 ms hasta `cpu_start` (unos 419 ms menos).
+- Ping pong mantiene estática la cancha, actualiza solo las regiones de pelota
+  y paletas, y usa un tick de 16 ms mientras está abierto.
+- `cargo build --release --offline` de `idf-prototype/` verificado.
+
+Pruebas físicas reportadas:
+
+- Táctil: funciona.
+- Apagado de pantalla: funciona.
+
+Pendiente de probar en hardware antes de reemplazar el firmware habitual:
+
+1. Comprobar imagen, colores, orientación y estabilidad del QSPI.
+2. Probar hora, batería, toque breve/largo, botón, menú y sincronización USB.
+3. Medir que la frecuencia pasa de 80 a 160 MHz al abrir una app y vuelve a
+   80 MHz al salir; confirmar que el bloqueo no queda retenido en transiciones.
+4. Verificar deep sleep, despertar por GPIO0 y reinicialización RTC IO.
+5. Medir corriente de deep sleep y autonomía con batería de 400 mAh.
+
+El driver de pantalla usa transferencias SPI por bloques y una copia DMA en
+memoria interna; el framebuffer RGB888 reside en PSRAM. El rendimiento visual,
+las asignaciones reales y el consumo deben medirse en el dispositivo.
 
 ## Comportamiento a conservar
 

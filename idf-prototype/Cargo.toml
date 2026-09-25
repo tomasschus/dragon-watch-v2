@@ -5,7 +5,11 @@ edition = "2021"
 resolver = "2"
 
 [dependencies]
+embedded-graphics = "0.8.2"
+embedded-hal = "1.0.0"
+esp-idf-hal = "0.46.2"
 esp-idf-sys = "0.37.2"
+heapless = "0.8.0"
 
 [build-dependencies]
 embuild = "0.33"
